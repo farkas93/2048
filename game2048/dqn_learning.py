@@ -1,55 +1,29 @@
+from matplotlib.cbook import flatten
 from game2048.game_logic import *
+import random
+from collections import deque, namedtuple
+import torch
+import torch.nn.functional as F
+import torch.optim as optim
+from torchsummary import summary
+from models.dqn_models import *
 
+
+BUFFER_SIZE = int(1e5)  # replay buffer size
+BATCH_SIZE = 16         # minibatch size
+GAMMA = 0.99            # discount factor
+TAU = 1e-3              # for soft update of target parameters
+LR = 5e-4               # learning rate 
+UPDATE_EVERY = 4        # how often to update the network
+EPOCH_SIZE = 100        # how many episodes are an epoch
+EARLY_OUT = 3           # Number of epochs we allow to have stagnation in learning before early out.
+
+device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 def basic_reward(game, action):
     next_game = game.copy()
     next_game.move(action)
     return next_game.score - game.score
-
-
-# Intuitively (at least my initial intuition said so :) log-score should work better than the score itself.
-# And indeed it starts learning much faster compared to the basic reward. But then it slows down significantly.
-# I am not sure how to explain it, may be it's just an issue of learning rate tuning ..
-
-def log_reward(game, action):
-    next_game = game.copy()
-    next_game.move(action)
-    return np.log(next_game.score + 1) - np.log(game.score + 1)
-
-
-# features = all adjacent pairs
-
-def f_2(X):
-    X_vert = (16 * X[:3, :] + X[1:, :]).ravel()
-    X_hor = (16 * X[:, :3] + X[:, 1:]).ravel()
-    return np.concatenate([X_vert, X_hor])
-
-
-# features = all adjacent triples, i.e. 3 in a row + 3 in a any square missing one corner
-
-def f_3(X):
-    X_vert = (256 * X[:2, :] + 16 * X[1:3, :] + X[2:, :]).ravel()
-    X_hor = (256 * X[:, :2] + 16 * X[:, 1:3] + X[:, 2:]).ravel()
-    X_ex_00 = (256 * X[1:, :3] + 16 * X[1:, 1:] + X[:3, 1:]).ravel()
-    X_ex_01 = (256 * X[:3, :3] + 16 * X[1:, :3] + X[1:, 1:]).ravel()
-    X_ex_10 = (256 * X[:3, :3] + 16 * X[:3, 1:] + X[1:, 1:]).ravel()
-    X_ex_11 = (256 * X[:3, :3] + 16 * X[1:, :3] + X[:3, 1:]).ravel()
-    return np.concatenate([X_vert, X_hor, X_ex_00, X_ex_01, X_ex_10, X_ex_11])
-
-
-# Initially i also made all adjacent quartets of different shape, but the learning was not happening.
-# My theory is that: 1) we want our features to intersect and correlate (otherwise we will only learn
-# some several separate pieces of the board, and that obviously can not lead to anything.
-# but 2) we don't want them to intersect too much (like 3 cells common to two quartets), as they start
-# to kinda suppress and contradict each other.
-# So i left just columns, rows and squares. 17 features all in all. And it works just fine.
-
-def f_4(X):
-    X_vert = (4096 * X[0, :] + 256 * X[1, :] + 16 * X[2, :] + X[3, :]).ravel()
-    X_hor = (4096 * X[:, 0] + 256 * X[:, 1] + 16 * X[:, 2] + X[:, 3]).ravel()
-    X_sq = (4096 * X[:3, :3] + 256 * X[1:, :3] + 16 * X[:3, 1:] + X[1:, 1:]).ravel()
-    return np.concatenate([X_vert, X_hor, X_sq])
-
 
 # The RL agent. It is not actually Q, as it tries to learn values of the states (V), rather than actions (Q).
 # Not sure what is the correct terminology here, this is definitely a TD(0), basically a modified Q-learning.
@@ -66,75 +40,121 @@ def f_4(X):
 
 class DQN_agent:
     #TODO: REWRITE THIS PART TO WORK WITH A DQN approach
-    save_file = "agent.npy"     # saves the weights, training step, current alpha and type of features
-    feature_functions = {2: f_2, 3: f_3, 4: f_4}
-    parameter_shape = {2: (24, 256), 3: (52, 4096), 4: (17, 65536)}
+    save_file = "agent.pth"     # saves the weights, training step, current alpha and type of features
 
-    def __init__(self, weights=None, reward=basic_reward, step=0, alpha=0.2, decay=0.999,
-                 file=None, n=4):
+    def __init__(self, reward=basic_reward,
+                 file=None, seed=4, savepath=""):
+
+        """Initialize an Agent object.       
+        Params
+        ======
+            state_size (int): dimension of each state
+            action_size (int): dimension of each action
+            seed (int): random seed
+        """
         self.R = reward
-        self.step = step
-        self.alpha = alpha
-        self.decay = decay
-        self.file = file or Q_agent.save_file
-        self.n = n
-        self.num_feat, self.size_feat = Q_agent.parameter_shape[n]
+        # Initialize time step (for updating every UPDATE_EVERY steps)
+        self.t_step = 0
+        self.file = savepath + file or DQN_agent.save_file
+        self.savepath = savepath
 
-        # The weights can be safely initialized to just zero, but that gives the 0 move (="left")
-        # an initial preference. Most probably this is irrelevant, but i wanted to avoid it.
+        #DQN code
 
-        if weights is None:
-            self.weights = weights or np.random.random((self.num_feat, self.size_feat)) / 100
-        else:
-            self.weights = weights
+        self.state_size = 16
+        self.action_size = 4
+        self.seed = random.seed(seed)
+
+        # Q-Network
+        self.qnetwork_local = DuelingQNetwork(self.state_size, self.action_size, seed).to(device)
+        self.qnetwork_target = DuelingQNetwork(self.state_size, self.action_size, seed).to(device)
+        self.optimizer = optim.Adam(self.qnetwork_local.parameters(), lr=LR)
+        summary(self.qnetwork_local, (self.state_size,))
+
+        # Replay memory
+        self.memory = ReplayBuffer(self.action_size, BUFFER_SIZE, BATCH_SIZE, seed)
 
     # a numpy.save method works fine not only for numpy arrays but also for ordinary lists
     def save_agent(self, file=None):
         file = file or self.file
-        arr = np.array([self.weights, self.step, self.alpha, self.n])
-        np.save(file, arr)
+        torch.save(self.qnetwork_local.state_dict(), file)
         pass
 
     @staticmethod
     def load_agent(file=save_file):
-        arr = np.load(file, allow_pickle=True)
-        agent = Q_agent(weights=arr[0], step=arr[1], alpha=arr[2], n=arr[3])
+        agent = DQN_agent()
+        self.qnetwork_local.load_state_dict(torch.load(save_file))
         return agent
 
-    def features(self, X):
-        return Q_agent.feature_functions[self.n](X)
+    def learn(self, experiences, gamma):
+        """Update value parameters using given batch of experience tuples.
+        Params
+        ======
+            experiences (Tuple[torch.Tensor]): tuple of (s, a, r, s', done) tuples 
+            gamma (float): discount factor
+        """
+        states, actions, rewards, next_states, dones = experiences
 
-    # numpy arrays have a nice "advanced slicing" trick, used in this function
-    def evaluate(self, state):
-        features = self.features(state.row)
-        return np.sum(self.weights[range(self.num_feat), features])
+        # Get max predicted Q values (for next states) from target model
+        Q_targets_next = self.qnetwork_target(next_states).detach().max(1)[0].unsqueeze(1)
+        # Compute Q targets for current states 
+        Q_targets = rewards + (gamma * Q_targets_next * (1 - dones))
 
-    def update(self, state, dw):
-        self.step += 1
-        if self.step % 200000 == 0 and self.alpha > 0.02:
-            self.alpha *= self.decay
-            print('------')
-            print(f'step = {self.step}, learning rate = {self.alpha}')
-            print('------')
+        # Get expected Q values from local model
+        Q_expected = self.qnetwork_local(states).gather(1, actions)
 
-        # Didn't use advanced slicing here because i experimented with the idea of updating
-        # a feature only once, even if it happens several times in D4 images of the board
-        # Not in the final version, but maybe makes sense, left it as it is.
+        # Compute loss
+        loss = F.mse_loss(Q_expected, Q_targets)
+        # Minimize the loss
+        self.optimizer.zero_grad()
+        loss.backward()
+        self.optimizer.step()
 
-        def _upd(X):
-            features = self.features(X)
-            for i, f in enumerate(features):
-                self.weights[i, f] += dw
+        # ------------------- update target network ------------------- #
+        self.soft_update(self.qnetwork_local, self.qnetwork_target, TAU)
+    
+    def soft_update(self, local_model, target_model, tau):
+        """Soft update model parameters.
+        θ_target = τ*θ_local + (1 - τ)*θ_target
+        Params
+        ======
+            local_model (PyTorch model): weights will be copied from
+            target_model (PyTorch model): weights will be copied to
+            tau (float): interpolation parameter 
+        """
+        for target_param, local_param in zip(target_model.parameters(), local_model.parameters()):
+            target_param.data.copy_(tau*local_param.data + (1.0-tau)*target_param.data)
 
-        # The numpy library has very nice functions of transpose, rot90, ravel etc.
-        # No actual number relocation happens, just the "view" is changed. So it's very fast.
+    def step(self, state, action, reward, next_state, done):
+        # Save experience in replay memory
+        self.memory.add(state, action, reward, next_state, done)
+        
+        # Learn every UPDATE_EVERY time steps.
+        self.t_step = (self.t_step + 1) % UPDATE_EVERY
+        if self.t_step == 0:
+            # If enough samples are available in memory, get random subset and learn
+            if len(self.memory) > BATCH_SIZE:
+                experiences = self.memory.sample()
+                self.learn(experiences, GAMMA)
 
-        X = state.row
-        for _ in range(4):
-            _upd(X)
-            X = np.transpose(X)
-            _upd(X)
-            X = np.rot90(np.transpose(X))
+    def act(self, state, eps=0.):
+        """Returns actions for given state as per current policy.
+        
+        Params
+        ======
+            state (array_like): current state
+            eps (float): epsilon, for epsilon-greedy action selection
+        """
+        state = torch.from_numpy(state).float().unsqueeze(0).to(device)
+        self.qnetwork_local.eval()
+        with torch.no_grad():
+            action_values = self.qnetwork_local(state)
+        self.qnetwork_local.train()
+
+        # Epsilon-greedy action selection
+        if random.random() > eps:
+            return np.argmax(action_values.cpu().data.numpy())
+        else:
+            return random.choice(np.arange(self.action_size))
 
     # The game 2048 has two kinds of states. After we make a move - this is the one we try to evaluate,
     # and after the random 2-4 tile is placed afterwards.
@@ -145,27 +165,21 @@ class DQN_agent:
     # A very fast and efficient procedure.
     # Then we move in that best direction, add random tile and proceed to the next cycle.
 
-    def episode(self):
+    def train_episode(self, eps):
         game = Game()
-        state, old_label = None, 0
+        state, action = None, 0
+        nr_moves = 0 
         while not game.game_over():
-            action, best_value = 0, -np.inf
-            for direction in range(4):
-                test = game.copy()
-                change = test.move(direction)
-                if change:
-                    value = self.evaluate(test)
-                    if value > best_value:
-                        action, best_value = direction, value
-            if state:
-                reward = self.R(game, action)
-                dw = self.alpha * (reward + best_value - old_label) / self.num_feat
-                self.update(state, dw)
+            nr_moves += 1
+            state = game.row.flatten()
+            action = int(self.act(state, eps))
+            
             game.move(action)
-            state, old_label = game.copy(), best_value
             game.new_tile()
-        dw = - self.alpha * old_label / self.num_feat
-        self.update(state, dw)
+            next_state = game.row.flatten()
+
+            reward = self.R(game, action)
+            self.step(state, action, reward, next_state, game.game_over())
         game.history.append(game)
         return game
 
@@ -173,11 +187,11 @@ class DQN_agent:
     # So if you train it and have to make a break at some point - no problem, by loading the agent back
     # you only lose last <100 episodes. Also, after reloading the agent one can adjust the learning rate,
     # decay of this rate etc. Helps with the experimentation.
-
     @staticmethod
-    def train_run(num_eps, agent=None, file=None, start_ep=0, saving=True):
+    def train_run(num_eps, agent=None, file=None, start_episode=0, saving=True, 
+                eps_start=1.0, eps_end=0.0001, eps_decay=0.5):
         if agent is None:
-            agent = Q_agent()
+            agent = DQN_agent()
         if file:
             agent.file = file
         av1000 = []
@@ -185,8 +199,11 @@ class DQN_agent:
         reached = [0] * 7
         best_game, best_score = None, 0
         start = time.time()
-        for i in range(start_ep + 1, num_eps + 1):
-            game = agent.episode()
+
+        eps = eps_start  
+        for i in range(start_episode + 1, num_eps + 1):
+            game = agent.train_episode(eps)
+            eps = max(eps_end, eps_decay*eps) # decrease epsilon
             ma100.append(game.score)
             av1000.append(game.score)
             if game.score > best_score:
@@ -194,15 +211,15 @@ class DQN_agent:
                 print('new best game!')
                 print(game)
                 if saving:
-                    game.save_game(file='best_game.npy')
+                    game.save_game(file=agent.savepath + 'best_game.npy')
                     print('game saved at best_game.npy')
             max_tile = np.max(game.row)
             if max_tile >= 10:
                 reached[max_tile - 10] += 1
-            if i - start_ep > 100:
+            if i - start_episode > EPOCH_SIZE:
                 ma100 = ma100[1:]
             print(i, game.odometer, game.score, 'reached', 1 << np.max(game.row), '100-ma=', int(np.mean(ma100)))
-            if saving and i % 100 == 0:
+            if saving and i % EPOCH_SIZE == 0:
                 agent.save_agent()
                 print(f'agent saved in {agent.file}')
             if i % 1000 == 0:
@@ -218,5 +235,44 @@ class DQN_agent:
                 reached = [0] * 7
                 print(f'best score so far = {best_score}')
                 print(best_game)
-                print(f'current learning rate = {agent.alpha}')
+                print(f'current learning rate = {LR}')
                 print('------')
+
+class ReplayBuffer:
+    """Fixed-size buffer to store experience tuples."""
+
+    def __init__(self, action_size, buffer_size, batch_size, seed):
+        """Initialize a ReplayBuffer object.
+        Params
+        ======
+            action_size (int): dimension of each action
+            buffer_size (int): maximum size of buffer
+            batch_size (int): size of each training batch
+            seed (int): random seed
+        """
+        self.action_size = action_size
+        self.memory = deque(maxlen=buffer_size)  
+        self.batch_size = batch_size
+        self.experience = namedtuple("Experience", field_names=["state", "action", "reward", "next_state", "done"])
+        self.seed = random.seed(seed)
+    
+    def add(self, state, action, reward, next_state, done):
+        """Add a new experience to memory."""
+        e = self.experience(state, action, reward, next_state, done)
+        self.memory.append(e)
+    
+    def sample(self):
+        """Randomly sample a batch of experiences from memory."""
+        experiences = random.sample(self.memory, k=self.batch_size)
+
+        states = torch.from_numpy(np.vstack([e.state for e in experiences if e is not None])).float().to(device)
+        actions = torch.from_numpy(np.vstack([e.action for e in experiences if e is not None])).long().to(device)
+        rewards = torch.from_numpy(np.vstack([e.reward for e in experiences if e is not None])).float().to(device)
+        next_states = torch.from_numpy(np.vstack([e.next_state for e in experiences if e is not None])).float().to(device)
+        dones = torch.from_numpy(np.vstack([e.done for e in experiences if e is not None]).astype(np.uint8)).float().to(device)
+  
+        return (states, actions, rewards, next_states, dones)
+
+    def __len__(self):
+        """Return the current size of internal memory."""
+        return len(self.memory)

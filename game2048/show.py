@@ -1,7 +1,7 @@
 import pygame
 from config import *
 from pygame.locals import *
-from game2048.r_learning import *
+from game2048.q_learning import *
 import sys
 
 

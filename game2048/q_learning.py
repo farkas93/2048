@@ -71,7 +71,7 @@ class Q_agent:
     parameter_shape = {2: (24, 256), 3: (52, 4096), 4: (17, 65536)}
 
     def __init__(self, weights=None, reward=basic_reward, step=0, alpha=0.2, decay=0.999,
-                 file=None, n=4):
+                 file=None, n=4, savepath=""):
         self.R = reward
         self.step = step
         self.alpha = alpha
@@ -79,6 +79,7 @@ class Q_agent:
         self.file = file or Q_agent.save_file
         self.n = n
         self.num_feat, self.size_feat = Q_agent.parameter_shape[n]
+        self.savepath = savepath
 
         # The weights can be safely initialized to just zero, but that gives the 0 move (="left")
         # an initial preference. Most probably this is irrelevant, but i wanted to avoid it.
@@ -194,7 +195,7 @@ class Q_agent:
                 print('new best game!')
                 print(game)
                 if saving:
-                    game.save_game(file='best_game.npy')
+                    game.save_game(file=agent.savepath + 'best_game.npy')
                     print('game saved at best_game.npy')
             max_tile = np.max(game.row)
             if max_tile >= 10:
