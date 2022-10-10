@@ -12,6 +12,8 @@ def main():
 
     option = int(input())
     viewer = Show()
+
+    config["SAVE_DIR"] = "./saved_data/abachurin/"
     if option == 0:
         viewer.play()
     elif option == 1:
