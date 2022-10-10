@@ -7,23 +7,23 @@ import torch.nn.functional as F
 import torch.optim as optim
 from torchsummary import summary
 from models.dqn_models import *
+from game2048.dqn_config import config
 
+BUFFER_SIZE = config["BUFFER_SIZE"]     # replay buffer size
+BATCH_SIZE = config["BATCH_SIZE"]       # minibatch size
+GAMMA = config["GAMMA"]                 # discount factor
+TAU = config["TAU"]                     # for soft update of target parameters
+LR = config["LR"]                       # learning rate 
+UPDATE_EVERY = config["UPDATE_EVERY"]   # how often to update the network
+EPOCH_SIZE = config["EPOCH_SIZE"]       # how many episodes are an epoch
+EARLY_OUT = config["EARLY_OUT"]         # Number of epochs we allow to have stagnation in learning before early out.
 
-BUFFER_SIZE = int(1e5)  # replay buffer size
-BATCH_SIZE = 16         # minibatch size
-GAMMA = 0.99            # discount factor
-TAU = 1e-3              # for soft update of target parameters
-LR = 5e-4               # learning rate 
-UPDATE_EVERY = 4        # how often to update the network
-EPOCH_SIZE = 100        # how many episodes are an epoch
-EARLY_OUT = 3           # Number of epochs we allow to have stagnation in learning before early out.
+EPS = config["EPSILON"]                 # Epsilon value for the epsilon greedy policy
+EPS_DECAY = config["EPS_DECAY"]
+EPS_MIN = config["EPS_MIN"]
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
-def basic_reward(game, action):
-    next_game = game.copy()
-    next_game.move(action)
-    return next_game.score - game.score
 
 # The RL agent. It is not actually Q, as it tries to learn values of the states (V), rather than actions (Q).
 # Not sure what is the correct terminology here, this is definitely a TD(0), basically a modified Q-learning.
@@ -42,8 +42,7 @@ class DQN_agent:
     #TODO: REWRITE THIS PART TO WORK WITH A DQN approach
     save_file = "agent.pth"     # saves the weights, training step, current alpha and type of features
 
-    def __init__(self, reward=basic_reward,
-                 file=None, seed=4, savepath=""):
+    def __init__(self, file=None, seed=4, savepath=""):
 
         """Initialize an Agent object.       
         Params
@@ -52,7 +51,7 @@ class DQN_agent:
             action_size (int): dimension of each action
             seed (int): random seed
         """
-        self.R = reward
+        self.R = config["REWARD_FUNCTION"]
         # Initialize time step (for updating every UPDATE_EVERY steps)
         self.t_step = 0
         self.file = savepath + file or DQN_agent.save_file
@@ -65,8 +64,8 @@ class DQN_agent:
         self.seed = random.seed(seed)
 
         # Q-Network
-        self.qnetwork_local = DuelingQNetwork(self.state_size, self.action_size, seed).to(device)
-        self.qnetwork_target = DuelingQNetwork(self.state_size, self.action_size, seed).to(device)
+        self.qnetwork_local = QNetwork(self.state_size, self.action_size, seed).to(device)
+        self.qnetwork_target = QNetwork(self.state_size, self.action_size, seed).to(device)
         self.optimizer = optim.Adam(self.qnetwork_local.parameters(), lr=LR)
         summary(self.qnetwork_local, (self.state_size,))
 
@@ -189,54 +188,70 @@ class DQN_agent:
     # decay of this rate etc. Helps with the experimentation.
     @staticmethod
     def train_run(num_eps, agent=None, file=None, start_episode=0, saving=True, 
-                eps_start=1.0, eps_end=0.0001, eps_decay=0.5):
+                eps_start=EPS, eps_end=EPS_MIN, eps_decay=EPS_DECAY):
         if agent is None:
             agent = DQN_agent()
         if file:
             agent.file = file
-        av1000 = []
-        ma100 = []
+        scores = []                        # list containing scores from each episode
+        scores_window = deque(maxlen=EPOCH_SIZE)  # last EPOCH_SIZE scores
         reached = [0] * 7
         best_game, best_score = None, 0
+        best_score_avg = 0
         start = time.time()
+        stagnation_cnt = 0
 
+        early_out = False
         eps = eps_start  
         for i in range(start_episode + 1, num_eps + 1):
+            # Simulate an episode
             game = agent.train_episode(eps)
-            eps = max(eps_end, eps_decay*eps) # decrease epsilon
-            ma100.append(game.score)
-            av1000.append(game.score)
-            if game.score > best_score:
-                best_game, best_score = game, game.score
-                print('new best game!')
+
+            score = game.score
+            eps = max(eps_end, eps_decay*eps) # decrease epsilon 
+            scores_window.append(score)       # save most recent score
+            scores.append(score)              # save most recent score
+            scores_window_avg = np.mean(scores_window)
+            if score > best_score:
+                best_game, best_score = game, score
+                print('\nnew best game!')
                 print(game)
                 if saving:
                     game.save_game(file=agent.savepath + 'best_game.npy')
                     print('game saved at best_game.npy')
+
             max_tile = np.max(game.row)
             if max_tile >= 10:
                 reached[max_tile - 10] += 1
-            if i - start_episode > EPOCH_SIZE:
-                ma100 = ma100[1:]
-            print(i, game.odometer, game.score, 'reached', 1 << np.max(game.row), '100-ma=', int(np.mean(ma100)))
-            if saving and i % EPOCH_SIZE == 0:
-                agent.save_agent()
-                print(f'agent saved in {agent.file}')
-            if i % 1000 == 0:
-                print('------')
+
+            print("\rEpisode {}: Moves {},  Score {}, Reached {}".format(i, game.odometer, score, 1 << np.max(game.row)), end="")
+            if i % EPOCH_SIZE == 0:
+                print('\n------')
+                print(f'Finished Epoch, agent saved in {agent.file}')
                 print((time.time() - start) / 60, "min")
                 start = time.time()
-                print(f'episode = {i}')
-                print(f'average over last 1000 episodes = {np.mean(av1000)}')
-                av1000 = []
                 for j in range(7):
                     r = sum(reached[j:]) / 10
                     print(f'{1 << (j + 10)} reached in {r} %')
                 reached = [0] * 7
                 print(f'best score so far = {best_score}')
                 print(best_game)
-                print(f'current learning rate = {LR}')
-                print('------')
+                print('\rEpisode {}\tAverage Score: {:.2f}'.format(i, scores_window_avg))
+                if best_score_avg < scores_window_avg:
+                    best_score_avg = scores_window_avg
+                    stagnation_cnt = 0
+                    print('Improvements on solving the environment in {:d} episodes!\t Created new checkpoint'.format(i))
+                    agent.save_agent()
+                else:
+                    stagnation_cnt += 1
+                if stagnation_cnt >= EARLY_OUT:
+                    print("Early Out: Training ended due to {} stagnating epochs. Resetting weights to the last checkpoint.".format(EARLY_OUT))
+                    early_out = True
+                    break                
+                print('------\n')
+        if not early_out:
+            agent.save_agent()
+        return scores
 
 class ReplayBuffer:
     """Fixed-size buffer to store experience tuples."""
