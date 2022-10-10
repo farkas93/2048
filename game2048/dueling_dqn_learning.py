@@ -1,4 +1,5 @@
 from matplotlib.cbook import flatten
+from matplotlib.pyplot import axis
 from game2048.game_logic import *
 import random
 from collections import deque, namedtuple
@@ -64,10 +65,10 @@ class DuelingDQN_agent:
         self.seed = random.seed(seed)
 
         # Q-Network
-        self.qnetwork_local = DuelingQNetwork(self.state_size, self.action_size, seed).to(device)
-        self.qnetwork_target = DuelingQNetwork(self.state_size, self.action_size, seed).to(device)
+        self.qnetwork_local = ConvDuelingQNetwork(self.state_size, self.action_size, seed).to(device)
+        self.qnetwork_target = ConvDuelingQNetwork(self.state_size, self.action_size, seed).to(device)
         self.optimizer = optim.Adam(self.qnetwork_local.parameters(), lr=LR) #optim.RMSprop(self.qnetwork_local.parameters(), lr=LR, momentum=0.95)
-        summary(self.qnetwork_local, (self.state_size,))
+        summary(self.qnetwork_local, (1,4,4))
 
         # Replay memory
         self.memory = ReplayBuffer(self.action_size, BUFFER_SIZE, BATCH_SIZE, seed)
@@ -81,7 +82,7 @@ class DuelingDQN_agent:
     @staticmethod
     def load_agent(file=save_file):
         agent = DuelingDQN_agent()
-        self.qnetwork_local.load_state_dict(torch.load(save_file))
+        agent.qnetwork_local.load_state_dict(torch.load(save_file))
         return agent
 
     def learn(self, experiences, gamma):
@@ -94,10 +95,14 @@ class DuelingDQN_agent:
         states, actions, rewards, next_states, dones = experiences
 
         # Get max predicted Q values (for next states) from target model
+       
+        next_states= torch.tensor(np.expand_dims(next_states, axis=1))
+        #print(next_states.shape)
         Q_targets_next = self.qnetwork_target(next_states).detach().max(1)[0].unsqueeze(1)
         # Compute Q targets for current states 
         Q_targets = rewards + (gamma * Q_targets_next * (1 - dones))
-
+        
+        states= torch.tensor(np.expand_dims(states, axis=1))
         # Get expected Q values from local model
         Q_expected = self.qnetwork_local(states).gather(1, actions)
 
@@ -135,7 +140,7 @@ class DuelingDQN_agent:
                 experiences = self.memory.sample()
                 self.learn(experiences, GAMMA)
 
-    def act(self, state, eps=0.):
+    def act(self, state, game, eps=0.):
         """Returns actions for given state as per current policy.
         
         Params
@@ -150,10 +155,18 @@ class DuelingDQN_agent:
         self.qnetwork_local.train()
 
         # Epsilon-greedy action selection
-        if random.random() > eps:
+        if False:#random.random() > eps:
+            #print("guess")
             return np.argmax(action_values.cpu().data.numpy())
         else:
-            return random.choice(np.arange(self.action_size))
+            #return random.choice(np.arange(self.action_size))
+            #print("eval")
+            greedy_action, best_value = 0, 0
+            for direction in range(4):
+                value = self.R(game, direction)
+                if value > best_value:
+                    greedy_action, best_value = direction, value
+            return greedy_action
 
     # The game 2048 has two kinds of states. After we make a move - this is the one we try to evaluate,
     # and after the random 2-4 tile is placed afterwards.
@@ -167,17 +180,15 @@ class DuelingDQN_agent:
     def train_episode(self, eps):
         game = Game()
         state, action = None, 0
-        nr_moves = 0 
         while not game.game_over():
-            nr_moves += 1
-            state = game.row.flatten()
-            action = int(self.act(state, eps))
+            state = np.expand_dims(game.row, axis=0)
+            action = int(self.act(state, game, eps))
             
+            reward = self.R(game, action)
             game.move(action)
             game.new_tile()
-            next_state = game.row.flatten()
+            next_state = np.expand_dims(game.row, axis=0)
 
-            reward = self.R(game, action)
             self.step(state, action, reward, next_state, game.game_over())
         game.history.append(game)
         return game

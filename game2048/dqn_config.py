@@ -19,7 +19,7 @@ def log_reward(game, action):
     
 
 config = {}
-config["REWARD_FUNCTION"] = log_reward
+config["REWARD_FUNCTION"] = odometer_reward
 config["BUFFER_SIZE"] = int(1e6)  # replay buffer size
 config["BATCH_SIZE"] = 32         # minibatch size
 config["GAMMA"] = 0.99            # discount factor
@@ -30,5 +30,5 @@ config["EPOCH_SIZE"] = 50        # how many episodes are an epoch
 config["EARLY_OUT"] = 3           # Number of epochs we allow to have stagnation in learning before early out.
 
 config["EPSILON"] = 1.0                # Epsilon value for the epsilon greedy policy
-config["EPS_DECAY"] = 0.9
-config["EPS_MIN"] = 0.0001
+config["EPS_DECAY"] = 0.99
+config["EPS_MIN"] = 0.01

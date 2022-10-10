@@ -30,7 +30,7 @@ def plot_for_experiment(scores_q_learn, scores_dqn, scores_dueldqn):
 
     avgscores_dueldqn = sliding_window(scores_dueldqn, SLIDING_WINDOW_FRAME)
     plt.plot(np.arange(len(avgscores_dueldqn)), avgscores_dueldqn, label="Dueling DQN", color="g")
-    plt.ylabel('Mean Score ' + SLIDING_WINDOW_FRAME)
+    plt.ylabel('Mean Score {}'.format(SLIDING_WINDOW_FRAME))
     plt.xlabel('Episode #') 
     plt.legend(bbox_to_anchor = (1.0, 1), loc = 'upper center')
     plt.show()

@@ -11,7 +11,7 @@ DUELING_DQN = 4
 App Config
 """
 config = {}
-config["EPISODES_TO_TRAIN"] = 50
+config["EPISODES_TO_TRAIN"] = 200
 config["ALPHA"] = 0.1
 config["USE_MODEL"] = DUELING_DQN  
 
