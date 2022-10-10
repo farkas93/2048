@@ -186,8 +186,10 @@ class Q_agent:
         reached = [0] * 7
         best_game, best_score = None, 0
         start = time.time()
+        scores = []
         for i in range(start_ep + 1, num_eps + 1):
             game = agent.episode()
+            scores.append(game.score)
             ma100.append(game.score)
             av1000.append(game.score)
             if game.score > best_score:
@@ -221,4 +223,5 @@ class Q_agent:
                 print(best_game)
                 print(f'current learning rate = {agent.alpha}')
                 print('------')
+        return scores
 

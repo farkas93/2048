@@ -38,7 +38,7 @@ device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 # 4) The same goes for back-propagation. We only need to update 17 numbers of 1m+ on every step.
 # 5) But in fact we update 17 * 8 weights using an obvious D4 symmetry group acting on the board
 
-class DQN_agent:
+class DuelingDQN_agent:
     #TODO: REWRITE THIS PART TO WORK WITH A DQN approach
     save_file = "agent.pth"     # saves the weights, training step, current alpha and type of features
 
@@ -54,7 +54,7 @@ class DQN_agent:
         self.R = config["REWARD_FUNCTION"]
         # Initialize time step (for updating every UPDATE_EVERY steps)
         self.t_step = 0
-        self.file = savepath + file or DQN_agent.save_file
+        self.file = savepath + file or DuelingDQN_agent.save_file
         self.savepath = savepath
 
         #DQN code
@@ -64,9 +64,9 @@ class DQN_agent:
         self.seed = random.seed(seed)
 
         # Q-Network
-        self.qnetwork_local = QNetwork(self.state_size, self.action_size, seed).to(device)
-        self.qnetwork_target = QNetwork(self.state_size, self.action_size, seed).to(device)
-        self.optimizer = optim.Adam(self.qnetwork_local.parameters(), lr=LR)
+        self.qnetwork_local = DuelingQNetwork(self.state_size, self.action_size, seed).to(device)
+        self.qnetwork_target = DuelingQNetwork(self.state_size, self.action_size, seed).to(device)
+        self.optimizer = optim.Adam(self.qnetwork_local.parameters(), lr=LR) #optim.RMSprop(self.qnetwork_local.parameters(), lr=LR, momentum=0.95)
         summary(self.qnetwork_local, (self.state_size,))
 
         # Replay memory
@@ -80,7 +80,7 @@ class DQN_agent:
 
     @staticmethod
     def load_agent(file=save_file):
-        agent = DQN_agent()
+        agent = DuelingDQN_agent()
         self.qnetwork_local.load_state_dict(torch.load(save_file))
         return agent
 
@@ -190,7 +190,7 @@ class DQN_agent:
     def train_run(num_eps, agent=None, file=None, start_episode=0, saving=True, 
                 eps_start=EPS, eps_end=EPS_MIN, eps_decay=EPS_DECAY):
         if agent is None:
-            agent = DQN_agent()
+            agent = DuelingDQN_agent()
         if file:
             agent.file = file
         scores = []                        # list containing scores from each episode
