@@ -71,7 +71,7 @@ class Game:
 
     def save_game(self, file=None):
         file = file or self.file
-        arr = np.array(self.history)
+        arr = np.array(self.history, dtype=object)
         np.save(file, arr)
 
     @staticmethod
