@@ -65,8 +65,8 @@ class DQN_agent:
         self.seed = random.seed(seed)
 
         # Q-Network
-        self.qnetwork_local = DuelingQNetwork(self.state_size, self.action_size, seed).to(device)
-        self.qnetwork_target = DuelingQNetwork(self.state_size, self.action_size, seed).to(device)
+        self.qnetwork_local = QNetwork(self.state_size, self.action_size, seed).to(device)
+        self.qnetwork_target = QNetwork(self.state_size, self.action_size, seed).to(device)
         self.optimizer = optim.Adam(self.qnetwork_local.parameters(), lr=LR)
         summary(self.qnetwork_local, (self.state_size,))
 
@@ -189,7 +189,7 @@ class DQN_agent:
     # decay of this rate etc. Helps with the experimentation.
     @staticmethod
     def train_run(num_eps, agent=None, file=None, start_episode=0, saving=True, 
-                eps_start=1.0, eps_end=0.0001, eps_decay=0.5):
+                eps_start=0.0001, eps_end=0.0001, eps_decay=0.5):
         if agent is None:
             agent = DQN_agent()
         if file:
